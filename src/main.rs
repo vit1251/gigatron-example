@@ -9,6 +9,8 @@ use std::cell::RefCell;
 use minifb::InputCallback;
 use std::rc::Rc;
 
+const ROM6: &[u8; 131072] = include_bytes!("../ROMv6.rom");
+
 struct Color(u8, u8, u8);
 
 fn bright(v: u8) -> u8 {
@@ -73,6 +75,7 @@ struct Gigatron {
     vgaY: i32,
     t: i64,
     joy: Option<Direction>,
+    active: bool,
 }
 
 fn E(W: bool, p: Register) -> Option<Register> {
@@ -207,10 +210,11 @@ impl Gigatron {
             vgaY: 0,
             t: -2,
             joy: None,
+            active: true,
         }
     }
 
-    fn garble(&mut self) {
+    fn reset(&mut self) {
         let mut rng = rand::rng();
         //garble( &RAM );
         rng.fill(&mut self.RAM);
@@ -226,14 +230,11 @@ impl Gigatron {
     }
 
     fn init(&mut self) {
-        self.garble();
+        self.reset();
         self.IN = 0xFF;
     }
 
-    fn read_rom(&mut self, filename: &str) -> std::io::Result<()> {
-        let mut file = File::open(filename)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
+    fn restore_rom(&mut self, buffer: &Vec<u8>) -> std::io::Result<()> {
         if buffer.len() != 65536 * 2 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -243,6 +244,14 @@ impl Gigatron {
         for (i, chunk) in buffer.chunks_exact(2).enumerate() {
             self.ROM[i] = [chunk[0], chunk[1]];
         }
+        Ok(())
+    }
+
+    fn read_rom(&mut self, filename: &str) -> std::io::Result<()> {
+        let mut file = File::open(filename)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        self.restore_rom(&buffer)?;
         Ok(())
     }
 
@@ -432,23 +441,8 @@ impl Gigatron {
         }
     }
 
-    fn vga(&mut self, T: &mut CpuState) {
-
-        // HSync (бит 2) переключается в 0, когда нужно начать новую строку
-        let hSync = ((self.S.OUT & 0b0100_0000) > 0) && ((T.OUT & 0b0100_0000) == 0);
-
-        // VSync (бит 1) переключается в 0, когда нужно начать новый кадр
-        let vSync = ((self.S.OUT & 0b1000_0000) > 0) && ((T.OUT & 0b1000_0000) == 0);
-
-        if vSync {
-            self.render2();
-            self.video.update();
-        }
-
-        if hSync {
-//            T.undef = rand::random(); // Change this once in a while
-        }
-
+    fn process(&mut self, T: &mut CpuState) {
+        self.vga(T);
         let key = self.video.check_key();
         if let Some(k) = key {
             println!("Character: {:?}", key);
@@ -463,6 +457,39 @@ impl Gigatron {
         }
 
         self.process_joystick();
+        self.process_system();
+
+    }
+
+    fn vga(&mut self, T: &mut CpuState) {
+
+        // HSync (бит 2) переключается в 0, когда нужно начать новую строку
+        let hSync = ((self.S.OUT & 0b0100_0000) > 0) && ((T.OUT & 0b0100_0000) == 0);
+
+        // VSync (бит 1) переключается в 0, когда нужно начать новый кадр
+        let vSync = ((self.S.OUT & 0b1000_0000) > 0) && ((T.OUT & 0b1000_0000) == 0);
+
+        if vSync {
+//            if (self.t % 100) == 0 {
+                self.render2();
+                self.video.update();
+//            }
+        }
+
+        if hSync {
+            T.undef = rand::random(); // Change this once in a while
+        }
+    }
+
+    fn process_system(&mut self) {
+        if self.video.window.is_key_down(Key::F2) {
+            println!("F10 press. Reset!");
+            self.init();
+            self.t = -2;
+        }
+        if self.video.window.is_key_down(Key::F10) {
+            self.active = false;
+        }
     }
 
     fn process_joystick(&mut self) {
@@ -493,13 +520,12 @@ impl Gigatron {
 
     fn run(&mut self) {
         let delay = Duration::from_nanos(160);
-
-        loop {
+        while self.active {
             if self.t < 0 {
                 self.S.PC = 0; // MCP100 Power-On Reset
             }
             let mut T: CpuState = self.cpuCycle(); // Update CPU
-            self.vga(&mut T);
+            self.process(&mut T);
             self.S = T;
             self.t += 1;
             //busy_wait(delay);
@@ -524,8 +550,11 @@ impl CpuState {
 
 fn main() {
     let mut E: Gigatron = Gigatron::new();
-    E.init();
 //    E.read_rom("ROMv1.rom").expect("No ROM.");
-    E.read_rom("ROMv6.rom").expect("No ROM.");
+//    E.read_rom("ROMv2.rom").expect("No ROM.");
+//    E.read_rom("ROMv6.rom").expect("No ROM.");
+//    E.read_rom("ROMvX0.rom").expect("No ROM.");
+    E.restore_rom(&ROM6.to_vec());
+    E.init();
     E.run();
 }
